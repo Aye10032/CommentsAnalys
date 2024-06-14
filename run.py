@@ -2,6 +2,7 @@ import os
 from enum import IntEnum
 from typing import List, Tuple
 
+import openai
 import yaml
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
@@ -10,10 +11,14 @@ from pandas import DataFrame
 from pydantic.v1 import BaseModel, Field
 from langchain_core.output_parsers import JsonOutputParser
 from tqdm import tqdm
+from loguru import logger
 
 import pandas as pd
 
 from Prompt import *
+
+FIRST_URL = 'https://open.bigmodel.cn/api/paas/v4/'
+SECOND_URL = 'https://open.bigmodel.cn/api/paas/v4/'
 
 
 class GenerateAnswer(BaseModel):
@@ -42,22 +47,22 @@ class MissionType(IntEnum):
     CHOOSE = 1
 
 
-def load_llm() -> ChatOpenAI:
+def load_llm(base_url: str) -> ChatOpenAI:
     with open('api_key.yaml', 'r') as yaml_f:
         yaml_text = yaml_f.read()
     llm_api = yaml.load(yaml_text, Loader=yaml.FullLoader)['zhipu']
 
     llm = ChatOpenAI(
-        model="glm-3-turbo",
-        openai_api_base='https://open.bigmodel.cn/api/paas/v4/',
+        model="glm-4",
+        openai_api_base=base_url,
         openai_api_key=llm_api,
-        temperature=0.1,
+        temperature=0.5,
     )
 
     return llm
 
 
-def answer(lists: list, comment: str, mission_type: MissionType) -> dict:
+def answer(lists: list, comment: str, mission_type: MissionType, base_url: str = FIRST_URL) -> dict:
     if mission_type == MissionType.UPDATE:
         parser = JsonOutputParser(pydantic_object=GenerateAnswer)
     else:
@@ -83,7 +88,7 @@ def answer(lists: list, comment: str, mission_type: MissionType) -> dict:
             ('human', ASK_CHOOSE)
         ])
 
-    llm = load_llm()
+    llm = load_llm(base_url)
 
     chain = prompt | llm | parser
 
@@ -123,10 +128,19 @@ def run(data: DataFrame, lists: list, output_path: str, init: bool = False) -> N
             continue
 
         comment = row['comment']
-        lists.extend(answer(lists, comment, MissionType.UPDATE)['lists'])
-        lists = list(set(lists))
-        with open(opinion_file, 'w', encoding='utf-8') as op_f:
-            op_f.write('\n'.join(lists))
+        try:
+            lists.extend(answer(lists, comment, MissionType.UPDATE)['lists'])
+            lists = list(set(lists))
+            with open(opinion_file, 'w', encoding='utf-8') as op_f:
+                op_f.write('\n'.join(lists))
+        except openai.BadRequestError:
+            logger.error('检测到敏感内容，切换模型')
+            lists.extend(answer(lists, comment, MissionType.UPDATE, SECOND_URL)['lists'])
+            lists = list(set(lists))
+            with open(opinion_file, 'w', encoding='utf-8') as op_f:
+                op_f.write('\n'.join(lists))
+        data.at[index, 'generate'] = True
+
         data.at[index, 'generate'] = True
         data.to_csv(record_file, encoding='utf-8', index=False)
 
@@ -143,7 +157,11 @@ def run(data: DataFrame, lists: list, output_path: str, init: bool = False) -> N
             continue
 
         comment = row['comment']
-        ans = answer(lists, comment, MissionType.CHOOSE)
+        try:
+            ans = answer(lists, comment, MissionType.CHOOSE)
+        except openai.BadRequestError:
+            logger.error('检测到敏感内容，切换模型')
+            ans = answer(lists, comment, MissionType.CHOOSE, SECOND_URL)
         df.at[ans['index'], 'count'] += 1
         df.to_csv(result_file, encoding='utf-8', index=False)
 
@@ -152,7 +170,7 @@ def run(data: DataFrame, lists: list, output_path: str, init: bool = False) -> N
 
 
 def main() -> None:
-    init = True
+    init = False
     data_file = 'data/news.txt'
     output_path = 'output/'
 
