@@ -48,10 +48,10 @@ def load_llm() -> ChatOpenAI:
     llm_api = yaml.load(yaml_text, Loader=yaml.FullLoader)['zhipu']
 
     llm = ChatOpenAI(
-        model="glm-4",
+        model="glm-3-turbo",
         openai_api_base='https://open.bigmodel.cn/api/paas/v4/',
         openai_api_key=llm_api,
-        temperature=0,
+        temperature=0.1,
     )
 
     return llm
@@ -116,8 +116,9 @@ def run(data: DataFrame, lists: list, output_path: str, init: bool = False) -> N
     opinion_file = os.path.join(output_path, 'ops.txt')
     record_file = os.path.join(output_path, 'news.csv')
     result_file = os.path.join(output_path, 'result.csv')
+    length = data.shape[0]
 
-    for index, row in tqdm(data.iterrows(), total=30):
+    for index, row in tqdm(data.iterrows(), total=length):
         if row['generate']:
             continue
 
@@ -137,7 +138,7 @@ def run(data: DataFrame, lists: list, output_path: str, init: bool = False) -> N
     else:
         df = pd.read_csv(result_file, encoding='utf-8')
 
-    for index, row in tqdm(data.iterrows(), total=30):
+    for index, row in tqdm(data.iterrows(), total=length):
         if row['choose']:
             continue
 
@@ -151,12 +152,12 @@ def run(data: DataFrame, lists: list, output_path: str, init: bool = False) -> N
 
 
 def main() -> None:
-    init = False
+    init = True
     data_file = 'data/news.txt'
-    output_path = 'output'
+    output_path = 'output/'
 
     data, lists = load_data(data_file, output_path, init)
-    # 截取前十条数据
+    # 截取数据
     data = data[:30]
 
     os.makedirs(output_path, exist_ok=True)
