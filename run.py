@@ -1,9 +1,12 @@
 import os
+import shutil
 from enum import IntEnum
+from operator import itemgetter
 from typing import List, Tuple
 
 import openai
 import yaml
+from langchain_core.runnables import RunnableLambda
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.messages import SystemMessage
@@ -62,6 +65,17 @@ def load_llm(base_url: str) -> ChatOpenAI:
     return llm
 
 
+def format_opinion(opinions: List[str]) -> str:
+    formatted = [(
+        f"观点 ID: {i + 1}\n"
+        f"观点: {op}\n"
+    )
+        for i, op in enumerate(opinions)
+    ]
+
+    return "\n\n" + "\n\n".join(formatted)
+
+
 def answer(lists: list, comment: str, mission_type: MissionType, base_url: str = FIRST_URL) -> dict:
     if mission_type == MissionType.UPDATE:
         parser = JsonOutputParser(pydantic_object=GenerateAnswer)
@@ -77,20 +91,27 @@ def answer(lists: list, comment: str, mission_type: MissionType, base_url: str =
         format_instructions=parser.get_format_instructions(),
     )
 
+    llm = load_llm(base_url)
+
     if mission_type == MissionType.UPDATE:
         prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content=system_str),
             ('human', ASK_UPDATE)
         ])
+
+        chain = prompt | llm | parser
     else:
         prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content=system_str),
             ('human', ASK_CHOOSE)
         ])
 
-    llm = load_llm(base_url)
+        formatter = itemgetter("lists") | RunnableLambda(format_opinion)
 
-    chain = prompt | llm | parser
+        chain = {
+                    'opinions': formatter,
+                    'comment': itemgetter('comment')
+                } | prompt | llm | parser
 
     result = chain.invoke({'comment': comment, 'lists': lists})
 
@@ -149,6 +170,9 @@ def run(data: DataFrame, lists: list, output_path: str, init: bool = False) -> N
         pd_list = [{'opi': key, 'count': value} for key, value in result.items()]
         df = pd.DataFrame(pd_list)
         df.to_csv(result_file, encoding='utf-8', index=False)
+
+        data['choose'] = False
+        data.to_csv(record_file, encoding='utf-8', index=False)
     else:
         df = pd.read_csv(result_file, encoding='utf-8')
 
@@ -162,6 +186,7 @@ def run(data: DataFrame, lists: list, output_path: str, init: bool = False) -> N
         except openai.BadRequestError:
             logger.error('检测到敏感内容，切换模型')
             ans = answer(lists, comment, MissionType.CHOOSE, SECOND_URL)
+
         df.at[ans['index'], 'count'] += 1
         df.to_csv(result_file, encoding='utf-8', index=False)
 
@@ -174,9 +199,13 @@ def main() -> None:
     data_file = 'data/news.txt'
     output_path = 'output/'
 
+    if init:
+        shutil.rmtree(output_path)
+        logger.info('初始化，删除输出文件夹')
+
     data, lists = load_data(data_file, output_path, init)
     # 截取数据
-    data = data[:30]
+    # data = data[:50]
 
     os.makedirs(output_path, exist_ok=True)
 
